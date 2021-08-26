@@ -30,7 +30,7 @@ uint32_t temp = 0;
 
 //----------работа с адресной лентой----------------
 
-#define PIN 6 //пин ленты
+#define PIN 4 //пин ленты
 #define NUMPIXELS 164 //число светодиодов в ленте
 
 Adafruit_NeoPixel pixel(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
