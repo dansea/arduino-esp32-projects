@@ -1,0 +1,194 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// вставляем ниже SSID и пароль для своей WiFi-сети:
+const char* ssid = ""; //сюда название вашей домашней wifi-сети роутера
+const char* password = "";//сюда пароль от wifi-сети роутера
+
+const char* mqtt_server = "broker.hivemq.com";
+#define mqtt_port 1883
+#define MQTT_USER "" //сюда имя пользователя MQTT, если система должна иметь пользователя и пароль
+#define MQTT_PASSWORD "" //сюда пароль пользователя MQTT, если система должна иметь пользователя и пароль
+#define MQTT_SERIAL_PUBLISH_CH "/MoyComp/1/Status"
+#define MQTT_SERIAL_RECEIVER_CH_1 "MoyComp/1"
+
+
+const int mosfetPin = 19;// Пин, к которому подключен мосфет-транзистор кнопки вкл/выкл компа 
+const int mosfetPin2 = 21;// Пин, к которому подключен мосфет-транзистор кнопки вкл/выкл компа 
+
+const int LED = 2;// Пин встроенного светодиода на ESP32
+
+const uint32_t comp_ON_period = 500;//сколько удерживаем нажатой кнопку "ВКЛ" при включении компа, в миллисекундах
+const uint32_t comp_Restart_period = 500;//сколько удерживаем нажатой кнопку "RESET" при включении компа, в миллисекундах
+const uint32_t comp_OFF_period = 4000; //количество миллисекунд, которое кнопка включения держится нажатой, 
+                                       //чтобы комп выключился принудительно. У меня это - 4 секунды. У вас может быть иначе.
+uint32_t pauseStartTime = 0;//начало времени удержания нажатой кнопки "ВКЛ" на компе
+
+
+
+
+
+//----------------------БЛОК РАБОТЫ С MQTT и WIFI --------------------
+
+WiFiClient wifiClient;
+
+PubSubClient client(wifiClient);
+
+void setup_wifi() {
+    delay(10);
+    // Начинаем с попытки подключения к wifi точке доступа
+    Serial.println();
+    Serial.print("Подключаемся к ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    randomSeed(micros());
+    Serial.println("");
+    Serial.println("WiFi подключен");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  // Продолжать попытки, пока не подключимся
+  while (!client.connected()) {
+    Serial.print("Попытка подключения к MQTT...");
+    // Генерируем случайный ID клиента
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    // Пытаемся подключиться
+    if (client.connect(clientId.c_str(),MQTT_USER,MQTT_PASSWORD)) {
+      Serial.println("подключились");
+      //Если подключились - публикуем приветствие...
+      client.publish("/MoyComp/", "Ура, мы в сети!");
+      // ... подписываемся на топик
+      client.subscribe(MQTT_SERIAL_RECEIVER_CH_1);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" попробуем еще через 5 секунд");
+      // Ждем 5 секунд перед новой попыткой
+      delay(5000);
+    }
+  }
+}
+
+
+void callback(char* topic, byte *payload, unsigned int length) 
+{
+    char in[length+1]={0};
+    memcpy(in,payload,length);  // функция копирует массив в другой - in. Это нужно, чтобы потом проще передавать этот массив, без указания его длины length
+    CompStarter (topic, in);
+}
+
+//--------------------------------------------------------------------
+
+
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED, OUTPUT);// Устанавливаем встроенный светодиод на ESP32 - как выход (просто "делаем красотень" :-) )
+
+  Serial.setTimeout(500);
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  reconnect();
+ 
+  // переключаем пин мосфета в режим «OUTPUT»:
+     pinMode(mosfetPin, OUTPUT);
+ 
+}//setup
+
+  
+ 
+
+
+void loop(){
+
+
+  //если разрыв соединения с точкой доступа-восстанавливаем связь:
+  if (WiFi.status() != WL_CONNECTED)
+     {
+           setup_wifi(); 
+     }
+   
+  //если разрыв соединения с MQTT-брокером - восстанавливаем связь: 
+  if (!client.connected()) 
+     {
+      reconnect();
+     }
+
+   client.loop();
+ 
+
+}
+
+// Функция, управляющая включением/выключением компа
+
+  void CompStarter (char* topic, char ch [])
+    {
+              String s = topic;//в данный момент эта строка не задействуется,
+                               //но понадобится, если топиков несколько и надо смотреть,
+                               //из какого топика пришло сообщение и реагировать на них по-разному
+ 
+              // выясняем, команда на вкл/выкл или перезагрузку компа
+              if(ch[0]=='0')
+              { 
+                Serial.println("команда: выключить комп");
+                digitalWrite(LED, LOW);//гасим встроенный светодиод
+
+                pauseStartTime = millis();
+               
+                digitalWrite(mosfetPin, HIGH);//жмем кнопку "ВКЛ" на компе и держим нажатой
+                digitalWrite(LED, HIGH);//зажигаем встроенный светодиод(просто для красоты)
+ 
+                while ( (millis() - pauseStartTime)<comp_OFF_period ){}; //ничего не делаем, просто ждем
+
+                digitalWrite(mosfetPin, LOW);//отпускаем кнопку "ВКЛ" на компе                
+                digitalWrite(LED, LOW);//гасим встроенный светодиод               
+
+                client.publish(MQTT_SERIAL_PUBLISH_CH, "Ваш компьютер выключен, господин!");
+                                
+ 
+              } else if (ch[0]=='1')
+              {
+                Serial.println("команда: включить комп");
+
+
+                pauseStartTime = millis();
+
+                digitalWrite(mosfetPin, HIGH);//жмем кнопку "ВКЛ" на компе и держим нажатой
+                digitalWrite(LED, HIGH);//зажигаем встроенный светодиод(просто для красоты)
+ 
+                while ( (millis() - pauseStartTime)<comp_ON_period ){}; //ничего не делаем, просто ждем
+
+                digitalWrite(mosfetPin, LOW);//отпускаем кнопку "ВКЛ" на компе                
+                digitalWrite(LED, LOW);//гасим встроенный светодиод    
+                
+                client.publish(MQTT_SERIAL_PUBLISH_CH, "Ваш компьютер включен, господин!");                
+
+              }
+              else if (ch[0]=='2')
+              {
+                Serial.println("команда: перезагрузить комп");
+
+
+                pauseStartTime = millis();
+
+                digitalWrite(mosfetPin2, HIGH);//жмем кнопку "ВКЛ" на компе и держим нажатой
+                digitalWrite(LED, HIGH);//зажигаем встроенный светодиод(просто для красоты)
+ 
+                while ( (millis() - pauseStartTime)<comp_Restart_period ){}; //ничего не делаем, просто ждем
+
+                digitalWrite(mosfetPin2, LOW);//отпускаем кнопку "ВКЛ" на компе                
+                digitalWrite(LED, LOW);//гасим встроенный светодиод    
+                
+                client.publish(MQTT_SERIAL_PUBLISH_CH, "Ваш компьютер перезагружается, господин!");                
+              }
+              
+}
